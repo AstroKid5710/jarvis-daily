@@ -1,0 +1,8 @@
+{
+  "name": "jarvis-daily",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A personal JARVIS that phones you with a daily briefing from your Notion tasks.",
+  "engines": { "node": ">=20" }
+}
