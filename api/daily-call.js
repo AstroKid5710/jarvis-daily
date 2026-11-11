@@ -14,7 +14,7 @@ export default async function handler(req, res) {
     if (tasks.length === 0) return res.json({ called: false, reason: 'no open tasks' });
 
     const briefing = await composeBriefing(tasks);
-    if (!briefing.shouldCall && req.query?.force !== '1') {
+    if (!briefing.shouldCall && req.query?.force !== '1' && process.env.FORCE_CALL !== '1') {
       return res.json({ called: false, reason: 'nothing worth a call today' });
     }
 
