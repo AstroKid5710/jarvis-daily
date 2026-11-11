@@ -1,13 +1,16 @@
 // Vapi calls this when a call ends. We read the transcript, work out what Xavi
-// agreed to, and update Notion. Nothing is changed during the call itself.
-import { getOpenTasks, completeTask, setDueDate } from '../lib/notion.js';
+// agreed to or asked for, and update Notion. Nothing is changed during the call itself.
+// Works for outbound briefing calls and for calls Xavi makes in to the assistant.
+import { getOpenTasks, completeTask, setDueDate, createTask } from '../lib/notion.js';
 
 const SYSTEM = [
   'You read the transcript of a phone call between JARVIS (the assistant) and Xavi (the user).',
   'You are given his open tasks. List ONLY changes Xavi clearly agreed to or asked for himself.',
   'Ignore anything JARVIS only suggested that Xavi did not accept. If unsure, leave it out.',
+  'Actions: complete an existing task, reschedule an existing task, or create a brand new task he asked to add.',
+  'Never create a task that duplicates an existing open task.',
   'Respond with ONLY a JSON object:',
-  '{ "actions": [ { "taskId": string, "action": "complete" or "reschedule", "dueDate": "YYYY-MM-DD, reschedule only" } ] }',
+  '{ "actions": [ { "action": "complete" or "reschedule" or "create", "taskId": "existing task id (complete/reschedule only)", "title": "short task title (create only)", "dueDate": "YYYY-MM-DD (reschedule, or create if he gave a date)" } ] }',
 ].join('\n');
 
 async function askClaude(transcript, tasks) {
@@ -17,7 +20,7 @@ async function askClaude(transcript, tasks) {
     headers: { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
     body: JSON.stringify({
       model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-5-5',
-      max_tokens: 600,
+      max_tokens: 800,
       system: SYSTEM,
       messages: [{ role: 'user', content: 'Now: ' + now + ' (America/Detroit)\n\nOpen tasks:\n' + JSON.stringify(tasks) + '\n\nTranscript:\n' + transcript }],
     }),
@@ -29,9 +32,13 @@ async function askClaude(transcript, tasks) {
   return m ? JSON.parse(m[0]).actions || [] : [];
 }
 
+const isDate = (d) => /^\d{4}-\d{2}-\d{2}$/.test(d || '');
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' });
-  if (req.headers['x-vapi-secret'] !== process.env.VAPI_WEBHOOK_SECRET) return res.status(401).json({ error: 'unauthorized' });
+  const secret = req.headers['x-vapi-secret'];
+  const ok = secret && (secret === process.env.VAPI_WEBHOOK_SECRET || (process.env.INBOUND_SECRET && secret === process.env.INBOUND_SECRET));
+  if (!ok) return res.status(401).json({ error: 'unauthorized' });
 
   const msg = req.body && req.body.message;
   if (!msg || msg.type !== 'end-of-call-report') return res.json({ ok: true, ignored: (msg && msg.type) || null });
@@ -44,12 +51,14 @@ export default async function handler(req, res) {
     const ids = new Set(tasks.map((t) => t.id));
     const applied = [];
     for (const a of await askClaude(transcript, tasks)) {
-      if (!ids.has(a.taskId)) continue;
-      if (a.action === 'complete') {
+      if (a.action === 'complete' && ids.has(a.taskId)) {
         await completeTask(a.taskId);
         applied.push(a);
-      } else if (a.action === 'reschedule' && /^\d{4}-\d{2}-\d{2}$/.test(a.dueDate || '')) {
+      } else if (a.action === 'reschedule' && ids.has(a.taskId) && isDate(a.dueDate)) {
         await setDueDate(a.taskId, a.dueDate);
+        applied.push(a);
+      } else if (a.action === 'create' && a.title) {
+        await createTask(String(a.title).slice(0, 200), isDate(a.dueDate) ? a.dueDate : null);
         applied.push(a);
       }
     }
